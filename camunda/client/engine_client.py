@@ -93,8 +93,8 @@ class EngineClient:
             headers.update(self.auth_bearer)
         return headers
 
-    async def correlate_message(self, message_name, process_instance_id=None, tenant_id=None, business_key=None,
-                                process_variables=None):
+    async def correlate_message(self, message_name, process_instance_id=None, tenant_id=None, business_key=None, all=False,
+                                process_variables=None, process_variables_local=None, correlation_keys=None, local_correlation_keys=None):
         """
         Correlates a message to the process engine to either trigger a message start event or
         an intermediate message catching event.
@@ -102,7 +102,11 @@ class EngineClient:
         :param process_instance_id:
         :param tenant_id:
         :param business_key:
+        :param all:
         :param process_variables:
+        :param process_variables_local:
+        :param correlation_keys:
+        :param local_correlation_keys:
         :return: response json
         """
         url = f"{self.engine_base_url}/message"
@@ -110,10 +114,14 @@ class EngineClient:
             "messageName": message_name,
             "resultEnabled": True,
             "processVariables": Variables.format(process_variables) if process_variables else None,
+            "processVariablesLocal": Variables.format(process_variables_local) if process_variables_local else None,
             "processInstanceId": process_instance_id,
             "tenantId": tenant_id,
             "withoutTenantId": not tenant_id,
             "businessKey": business_key,
+            "all": all,
+            "correlationKeys": correlation_keys,
+            "localCorrelationKeys": local_correlation_keys,
         }
 
         if process_instance_id:
