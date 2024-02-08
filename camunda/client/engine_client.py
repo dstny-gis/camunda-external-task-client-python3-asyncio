@@ -93,8 +93,8 @@ class EngineClient:
             headers.update(self.auth_bearer)
         return headers
 
-    async def correlate_message(self, message_name, process_instance_id=None, tenant_id=None, business_key=None,
-                                process_variables=None):
+    async def correlate_message(self, message_name, process_instance_id=None, tenant_id=None, business_key=None, all=False,
+                                process_variables=None, process_variables_local=None, correlation_keys=None, local_correlation_keys=None):
         """
         Correlates a message to the process engine to either trigger a message start event or
         an intermediate message catching event.
@@ -102,7 +102,11 @@ class EngineClient:
         :param process_instance_id:
         :param tenant_id:
         :param business_key:
+        :param all:
         :param process_variables:
+        :param process_variables_local:
+        :param correlation_keys:
+        :param local_correlation_keys:
         :return: response json
         """
         url = f"{self.engine_base_url}/message"
@@ -110,10 +114,14 @@ class EngineClient:
             "messageName": message_name,
             "resultEnabled": True,
             "processVariables": Variables.format(process_variables) if process_variables else None,
+            "processVariablesLocal": Variables.format(process_variables_local) if process_variables_local else None,
             "processInstanceId": process_instance_id,
             "tenantId": tenant_id,
             "withoutTenantId": not tenant_id,
             "businessKey": business_key,
+            "all": True if all else None,
+            "correlationKeys": correlation_keys,
+            "localCorrelationKeys": local_correlation_keys,
         }
 
         if process_instance_id:
@@ -183,3 +191,83 @@ class EngineClient:
         if with_meta:
             return dict(resp_json, value=decoded_value)
         return decoded_value
+
+    async def correlate_message_manually(self, message_name, process_instance_id=None, tenant_id=None, business_key=None, variables=None):
+        """
+        Manually correlates a message to the process engine to trigger a message receive task.
+        :param message_name:
+        :param process_instance_id:
+        :param tenant_id:
+        :param business_key:
+        :param variables:
+        :return: response json
+        """
+        matches = 0
+
+        async with aiohttp.ClientSession() as session:
+            # Fetch a list of executions that are waiting messages based on the message name
+            url = f"{self.engine_base_url}/execution"
+            body = {
+                "messageEventSubscriptionName": message_name,
+                "active": "true",  # Only active executions
+                "tenantIdIn": tenant_id,
+                "businessKey": business_key,
+                "processInstanceId": process_instance_id,
+            }
+            body = {k: v for k, v in body.items() if v is not None}
+
+            response = await session.post(url, headers=self._get_headers(), json=body)
+            await raise_exception_if_not_ok(response)
+            executions = await response.json()
+
+            if not executions:
+                logger.info('No executions found for message %s', message_name)
+                return matches
+
+            # Loop over all executions and fetch their input variables
+            for execution in executions:
+                logger.debug('Checking execution %s of process instance %s...', execution['id'], execution['processInstanceId'])
+                url = f"{self.engine_base_url}/execution/{execution['id']}/localVariables"
+                params = {
+                    "deserializeValues": 'false'
+                }
+                response = await session.get(url, headers=self._get_headers(), params=params)
+                await raise_exception_if_not_ok(response)
+                input_variables = await response.json()
+
+                # Check if the input variables match the expected variables
+                if self.__match_variables(input_variables, variables or {}):
+                    logger.info('Match found for execution %s of process instance %s: input variables %s MATCHES with message %s', execution['id'],
+                                execution['processInstanceId'], input_variables, variables)
+
+                    # If they match, trigger the message
+                    url = f"{self.engine_base_url}/execution/{execution['id']}/messageSubscriptions/{message_name}/trigger"
+                    body = {
+                        "variables": {}  # variables,
+                    }
+                    response = await session.post(url, headers=self._get_headers(), json=body)
+                    await raise_exception_if_not_ok(response)
+
+                    # Increment the matches counter
+                    matches += 1
+                else:
+                    logger.info('No match found for execution %s of process instance %s: input variables %s DON\'T MATCH with message %s', execution['id'],
+                                execution['processInstanceId'], input_variables, variables)
+
+        return matches
+
+    @staticmethod
+    def __match_variables(input_variables, variables):
+        if not input_variables:
+            return True
+        for key, value in input_variables.items():
+            # logger.debug('Checking input variable %s = %s...', key, value)
+
+            if key not in variables:
+                # logger.debug('No match found for key %s (not found)', key)
+                return False
+            # TODO: type conversion
+            if variables[key] != value["value"]:
+                # logger.debug('No match found for key %s with value %s', key, value)
+                return False
+        return True
