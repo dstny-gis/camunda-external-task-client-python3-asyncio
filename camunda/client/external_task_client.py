@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import random
 from http import HTTPStatus
 
 import aiohttp
@@ -7,7 +9,7 @@ from camunda.client.engine_client import ENGINE_LOCAL_BASE_URL
 from camunda.utils.auth_basic import AuthBasic, obfuscate_password
 from camunda.utils.auth_bearer import AuthBearer
 from camunda.utils.log_utils import log_with_context
-from camunda.utils.response_utils import raise_exception_if_not_ok
+from camunda.utils.response_utils import raise_exception_if_not_ok, OptimisticLockingException
 from camunda.utils.utils import str_to_list
 from camunda.variables.variables import Variables
 
@@ -89,9 +91,7 @@ class ExternalTaskClient:
             "localVariables": Variables.format(local_variables)
         }
 
-        async with aiohttp.ClientSession() as session:
-            response = await session.post(url, headers=self._get_headers(), json=body, timeout=self.http_timeout_seconds)
-            await raise_exception_if_not_ok(response)
+        response = await self._request('POST', url, body)
         return response.status == HTTPStatus.NO_CONTENT
 
     def get_task_complete_url(self, task_id):
@@ -109,9 +109,7 @@ class ExternalTaskClient:
         if error_details:
             body["errorDetails"] = error_details
 
-        async with aiohttp.ClientSession() as session:
-            response = await session.post(url, headers=self._get_headers(), json=body, timeout=self.http_timeout_seconds)
-            await raise_exception_if_not_ok(response)
+        response = await self._request('POST', url, body)
         return response.status == HTTPStatus.NO_CONTENT
 
     def get_task_failure_url(self, task_id):
@@ -130,10 +128,8 @@ class ExternalTaskClient:
         if self.is_debug:
             self._log_with_context(f"trying to report bpmn error with request payload: {body}")
 
-        async with aiohttp.ClientSession() as session:
-            resp = await session.post(url, headers=self._get_headers(), json=body, timeout=self.http_timeout_seconds)
-            resp.raise_for_status()
-        return resp.status == HTTPStatus.NO_CONTENT
+        response = await self._request('POST', url, body)
+        return response.status == HTTPStatus.NO_CONTENT
 
     def get_task_bpmn_error_url(self, task_id):
         return f"{self.external_task_base_url}/{task_id}/bpmnError"
@@ -165,3 +161,20 @@ class ExternalTaskClient:
     def _log_with_context(self, msg, log_level='info', **kwargs):
         context = {"WORKER_ID": self.worker_id}
         log_with_context(msg, context=context, log_level=log_level, **kwargs)
+
+    async def _request(self, method, url, body):
+        tries = 5
+        async with aiohttp.ClientSession() as session:
+            while True:
+                try:
+                    response = await session._request(method, url, headers=self._get_headers(), json=body, timeout=self.http_timeout_seconds)
+                    await raise_exception_if_not_ok(response)
+                    return response
+                except OptimisticLockingException:
+                    # if optimistic locking exception occurs, then we should retry the complete operation
+                    if tries == 0:
+                        raise
+                    tries -= 1
+                    sleep = random.uniform(1, 5)
+                    logger.info(f"Got an OptimisticLockingException during a request to {url}. {tries} retries left. Sleeping for {sleep}s.")
+                    await asyncio.sleep(sleep)

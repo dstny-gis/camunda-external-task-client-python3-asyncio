@@ -1,11 +1,18 @@
 from aiohttp import ClientResponse
 
 
+class OptimisticLockingException(Exception):
+    pass
+
+
 async def raise_exception_if_not_ok(response: ClientResponse):
     if response.ok:
         return
 
     resp_json = await __get_json_or_raise_for_status(response)
+
+    if resp_json and resp_json.get('type') == 'OptimisticLockingException':
+        raise OptimisticLockingException(get_response_error_message(response.status, resp_json or {}))
 
     raise Exception(get_response_error_message(response.status, resp_json or {}))
 
