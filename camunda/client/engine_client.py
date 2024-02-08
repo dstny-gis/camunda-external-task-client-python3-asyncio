@@ -119,7 +119,7 @@ class EngineClient:
             "tenantId": tenant_id,
             "withoutTenantId": not tenant_id,
             "businessKey": business_key,
-            "all": all,
+            "all": True if all else None,
             "correlationKeys": correlation_keys,
             "localCorrelationKeys": local_correlation_keys,
         }
