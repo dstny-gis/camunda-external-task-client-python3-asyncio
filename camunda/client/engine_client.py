@@ -192,7 +192,7 @@ class EngineClient:
             return dict(resp_json, value=decoded_value)
         return decoded_value
 
-    async def correlate_message_manually(self, message_name, process_instance_id=None, tenant_id=None, business_key=None, variables=None):
+    async def correlate_message_manually(self, message_name, process_instance_id=None, tenant_id=None, business_key=None, variables=None, all=False):
         """
         Manually correlates a message to the process engine to trigger a message receive task.
         :param message_name:
@@ -200,10 +200,10 @@ class EngineClient:
         :param tenant_id:
         :param business_key:
         :param variables:
+        :param all:
         :return: response json
         """
         matches = 0
-
         async with aiohttp.ClientSession() as session:
             # Fetch a list of executions that are waiting messages based on the message name
             url = f"{self.engine_base_url}/execution"
@@ -231,9 +231,9 @@ class EngineClient:
                 params = {
                     "deserializeValues": 'false'
                 }
-                response = await session.get(url, headers=self._get_headers(), params=params)
-                await raise_exception_if_not_ok(response)
-                input_variables = await response.json()
+                variables_response = await session.get(url, headers=self._get_headers(), params=params)
+                await raise_exception_if_not_ok(variables_response)
+                input_variables = await variables_response.json()
 
                 # Check if the input variables match the expected variables
                 if self.__match_variables(input_variables, variables or {}):
@@ -245,16 +245,18 @@ class EngineClient:
                     body = {
                         "variables": {}  # variables,
                     }
-                    response = await session.post(url, headers=self._get_headers(), json=body)
-                    await raise_exception_if_not_ok(response)
+                    trigger_response = await session.post(url, headers=self._get_headers(), json=body)
+                    await raise_exception_if_not_ok(trigger_response)
 
                     # Increment the matches counter
                     matches += 1
+                    if not all:
+                        return execution
                 else:
                     logger.info('No match found for execution %s of process instance %s: input variables %s DON\'T MATCH with message %s', execution['id'],
                                 execution['processInstanceId'], input_variables, variables)
 
-        return matches
+        return None
 
     @staticmethod
     def __match_variables(input_variables, variables):
